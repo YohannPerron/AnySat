@@ -1,5 +1,5 @@
 defaults:
   - default.yaml
-
-accelerator: mps
-devices: 1
+trainer:
+  accelerator: mps
+  devices: 1
