@@ -213,6 +213,7 @@ LOSSES = {
     "mil-nce": MILNCE,
     "mse": MSELoss,
     "mse-semseg": MSESemSegLoss,
+    "mil-nce-patch": MILNCEPatch,
 }
 AVERAGE = {False: lambda x: x, True: lambda x: x.mean(dim=-1)}
 

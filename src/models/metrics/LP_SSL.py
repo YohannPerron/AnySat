@@ -198,14 +198,14 @@ EVAL_DATASETS = {
         "task_type": "classif",
         'overrides': {}
     },
-    "BurnScars": {
-        "train_augmentation": Identity(),
-        "test_augmentation": Identity(),
-        "modalities": ["hls"],
-        "scale": 24,
-        "task_type": "semseg",
-        'overrides': {}
-    },
+    # "BurnScars": {
+    #     "train_augmentation": Identity(),
+    #     "test_augmentation": Identity(),
+    #     "modalities": ["hls"],
+    #     "scale": 24,
+    #     "task_type": "semseg",
+    #     'overrides': {}
+    # },
     "Pastis": {
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),

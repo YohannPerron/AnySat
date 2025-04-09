@@ -1,11 +1,17 @@
-from lightning import LightningModule
-import torch
 import copy
-import pandas as pd
-import torch.nn.functional as F
 
-from models.networks.encoder.Transformer import repeat_interleave_batch, apply_masks
+import pandas as pd
+import torch
+import torch.nn.functional as F
+from lightning import LightningModule
+
+from models.metrics.LP_SSL import eval_model_FT, get_dataset_config
+from models.networks.encoder.Transformer import (apply_masks,
+                                                 repeat_interleave_batch)
+from src import utils
 from utils.mask_collator import MaskCollator, MaskCollatorNaive
+
+log = utils.get_pylogger(__name__)
 
 class Module(LightningModule):
     def __init__(self,
@@ -13,7 +19,7 @@ class Module(LightningModule):
                  loss,
                  train_metrics,
                  val_metrics,
-                 test_metrics, 
+                 test_metrics,
                  scheduler,
                  optimizer,
                  ema,
@@ -261,14 +267,16 @@ class ModuleMulti(LightningModule):
             dataset_config = get_dataset_config(self.path_to_data)
             #spread dataset_config (List) on all the ranks
             rank_dataset_config = [config for i, config in enumerate(dataset_config) if i%self.trainer.world_size == self.global_rank]
-            FT_metrics = eval_model_FT(dataset_config, self.model.encoder, device=self.device, verbose=False)
+            FT_metrics = eval_model_FT(rank_dataset_config, self.model.encoder, device=self.device, verbose=False)
 
             #gather FT_metrics on all the ranks
-            # FT_metrics_all = torch.distributed.all_gather_object(object_list=[None] * self.trainer.world_size, obj=FT_metrics)
-            FT_metrics_all = self.all_gather(FT_metrics)
+            FT_metrics_all = [None] * self.trainer.world_size
+            torch.distributed.all_gather_object(object_list=FT_metrics_all, obj=FT_metrics)
+            # FT_metrics_all = self.all_gather(FT_metrics)
             if self.trainer.is_global_zero:
                 print(f"FT_metrics_all: {FT_metrics_all}")
-                metrics.update(FT_metrics_all)
+            for FT_metrics in FT_metrics_all:
+                metrics.update(FT_metrics)
 
         for metric_name, metric_value in metrics.items():
             self.log(
