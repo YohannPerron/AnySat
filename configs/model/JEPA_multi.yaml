@@ -2,8 +2,8 @@ defaults:
   - network: Monomodal
   - loss: bce
   - train_metrics: no_metrics
-  - val_metrics: metrics_contrastif_multi
-  - test_metrics:  metrics_contrastif_multi
+  - val_metrics: out_diversity
+  - test_metrics:  out_diversity
   - _self_
 
 name: PseTae
@@ -40,3 +40,5 @@ instance:
   scales: ${dataset.scales}
   shapes: ${dataset.shapes}
   devices: ${trainer.devices}
+  eval_every: 1
+  path_to_data: ${paths.data_dir}

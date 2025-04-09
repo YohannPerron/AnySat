@@ -27,6 +27,8 @@ scikit-learn
 rasterio
 timm
 easydict
-geopandas
-flash-attn
+pandas==2.1.0
+geopandas==0.14.4
+# flash-attn
 # sh            # for running bash commands in some tests (linux/macos only)
+tifffile

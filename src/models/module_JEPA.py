@@ -8,13 +8,13 @@ from models.networks.encoder.Transformer import repeat_interleave_batch, apply_m
 from utils.mask_collator import MaskCollator, MaskCollatorNaive
 
 class Module(LightningModule):
-    def __init__(self, 
-                 network, 
-                 loss, 
-                 train_metrics, 
-                 val_metrics, 
+    def __init__(self,
+                 network,
+                 loss,
+                 train_metrics,
+                 val_metrics,
                  test_metrics, 
-                 scheduler, 
+                 scheduler,
                  optimizer,
                  ema,
                  ipe_scale,
@@ -76,7 +76,7 @@ class Module(LightningModule):
                 on_epoch=True,
             )
         return loss
-    
+
     def on_after_backward(self):
         with torch.no_grad():
             m = next(self.momentum_scheduler)
@@ -149,15 +149,15 @@ class Module(LightningModule):
                 },
             }
         return {"optimizer": optimizer}
-    
+
 class ModuleMulti(LightningModule):
-    def __init__(self, 
-                 network, 
-                 loss, 
-                 train_metrics, 
-                 val_metrics, 
-                 test_metrics, 
-                 scheduler, 
+    def __init__(self,
+                 network,
+                 loss,
+                 train_metrics,
+                 val_metrics,
+                 test_metrics,
+                 scheduler,
                  optimizer,
                  ema,
                  ipe_scale,
@@ -166,7 +166,9 @@ class ModuleMulti(LightningModule):
                  num_epochs,
                  scales,
                  shapes,
-                 devices
+                 devices,
+                 path_to_data,
+                 eval_every,
                  ):
         super().__init__()
         self.model = network.instance
@@ -179,6 +181,8 @@ class ModuleMulti(LightningModule):
         self.test_metrics = test_metrics
         self.optimizer = optimizer
         self.scheduler = scheduler
+        self.eval_every = eval_every
+        self.path_to_data = path_to_data
 
         self.mask_collator = {}
         datasets = list(scales.keys())
@@ -194,7 +198,7 @@ class ModuleMulti(LightningModule):
                                                                                 npred=4,
                                                                                 min_keep=0,
                                                                                 allow_overlap=False)
-        
+
         self.momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
 
@@ -224,7 +228,7 @@ class ModuleMulti(LightningModule):
                 on_epoch=True,
             )
         return loss
-    
+
     def on_after_backward(self):
         with torch.no_grad():
             m = next(self.momentum_scheduler)
@@ -237,10 +241,10 @@ class ModuleMulti(LightningModule):
         batch['target'] = target
         loss = self.loss(pred, batch, average=True)
         if "logits" in loss.keys():
-            self.val_metrics.update(loss["logits"], dataset=batch['dataset'])
+            # self.val_metrics.update(loss["logits"], dataset=batch['dataset'])
             loss.pop("logits")
-        else:
-            self.val_metrics.update(pred, batch)
+
+        self.val_metrics.update(pred, batch)
         for metric_name, metric_value in loss.items():
             self.log(
                 f"val/{metric_name}",
@@ -252,6 +256,20 @@ class ModuleMulti(LightningModule):
 
     def on_validation_epoch_end(self):
         metrics = self.val_metrics.compute()
+
+        if self.current_epoch % self.eval_every == 0:
+            dataset_config = get_dataset_config(self.path_to_data)
+            #spread dataset_config (List) on all the ranks
+            rank_dataset_config = [config for i, config in enumerate(dataset_config) if i%self.trainer.world_size == self.global_rank]
+            FT_metrics = eval_model_FT(dataset_config, self.model.encoder, device=self.device, verbose=False)
+
+            #gather FT_metrics on all the ranks
+            # FT_metrics_all = torch.distributed.all_gather_object(object_list=[None] * self.trainer.world_size, obj=FT_metrics)
+            FT_metrics_all = self.all_gather(FT_metrics)
+            if self.trainer.is_global_zero:
+                print(f"FT_metrics_all: {FT_metrics_all}")
+                metrics.update(FT_metrics_all)
+
         for metric_name, metric_value in metrics.items():
             self.log(
                 f"val/{metric_name}",
@@ -282,6 +300,9 @@ class ModuleMulti(LightningModule):
                 on_step=False,
                 on_epoch=True,
             )
+    def on_train_start(self):
+        log.info(f"Epoch: {self.current_epoch}")
+        return super().on_train_start()
 
     def configure_optimizers(self):
         optimizer = self.optimizer(params=self.parameters())
@@ -299,13 +320,13 @@ class ModuleMulti(LightningModule):
         return {"optimizer": optimizer}
 
 class ModuleMultiNaive(LightningModule):
-    def __init__(self, 
-                 network, 
-                 loss, 
-                 train_metrics, 
-                 val_metrics, 
-                 test_metrics, 
-                 scheduler, 
+    def __init__(self,
+                 network,
+                 loss,
+                 train_metrics,
+                 val_metrics,
+                 test_metrics,
+                 scheduler,
                  optimizer,
                  ema,
                  ipe_scale,
@@ -335,7 +356,7 @@ class ModuleMultiNaive(LightningModule):
                 shape = shapes[dataset] // scale
                 self.mask_collator['_'.join([dataset, str(scale)])] = MaskCollatorNaive(input_size=(shape, shape),
                                                                                 patch_size=1)
-        
+
         self.momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
 
@@ -365,7 +386,7 @@ class ModuleMultiNaive(LightningModule):
                 on_epoch=True,
             )
         return loss
-    
+
     def on_after_backward(self):
         with torch.no_grad():
             m = next(self.momentum_scheduler)

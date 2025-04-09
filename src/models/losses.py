@@ -1,6 +1,7 @@
 import torch
-from torch import nn
 import torch.nn.functional as F
+from torch import nn
+
 
 class CrossEntropyWeighted(nn.Module):
     def __init__(self, num_classes):
@@ -14,7 +15,7 @@ class CrossEntropyWeighted(nn.Module):
             x: torch.Tensor BxN that contains the logits
             y: dict that contains "label": torch.Tensor BxN
         Returns:
-            torch.Tensor: CrossEntropy loss between x and y: torch.Tensor([B]) while having a 0 weight 
+            torch.Tensor: CrossEntropy loss between x and y: torch.Tensor([B]) while having a 0 weight
         """
         self.weights = self.weights.to(x.device)
         return {"cross_entropy_loss": nn.functional.cross_entropy(x.flatten(2, 3), y["label"].flatten(1, 2).long(), weight=self.weights)}
@@ -51,7 +52,7 @@ class CrossEntropy(nn.Module):
             torch.Tensor: CrossEntropy loss between x and y: torch.Tensor([B])
         """
         return {"cross_entropy_loss": nn.functional.cross_entropy(x, y["label"])}
-    
+
 class BCEWithLogs(nn.Module):
     def __init__(self):
         super(BCEWithLogs, self).__init__()
@@ -66,10 +67,10 @@ class BCEWithLogs(nn.Module):
             torch.Tensor: BCE loss between x and y: torch.Tensor([B])
         """
         return {"bce_loss": self.loss(x.float(), y["label"].float())}
-    
+
 class MILNCE(nn.Module):
     """Multiple Instance Learning Noise Contrastive Estimation (MIL-NCE) loss.
-    
+
     This loss function implements a contrastive learning approach that handles multiple modalities
     and patches within each modality. It computes similarities between different modality features
     while handling potential masks for valid/invalid patches.
@@ -98,13 +99,13 @@ class MILNCE(nn.Module):
         modalities = [item.split('_')[1] for item in list(x.keys()) if item.startswith('tokens')]
 
         features = [x[f'tokens_{modality}'] for modality in modalities]
-        n_patches = features[0].shape[1] 
+        n_patches = features[0].shape[1]
         n_tokens = n_patches * features[0].shape[0]
         features = torch.cat(features, dim=0).flatten(0, 1)
-        
+
         # Compute similarity matrix
         logits = self.cosine_similarity(features, features, normalize=True)
-        
+
         # Set diagonal blocks to -inf efficiently
         diag_mask = torch.block_diag(*[torch.ones(n_patches, n_patches) for _ in range(len(logits)//n_patches)])
         logits.masked_fill_(diag_mask.bool().to(logits.device), float('-inf'))
@@ -113,37 +114,67 @@ class MILNCE(nn.Module):
         masks = [item.split('_')[1] for item in list(x.keys()) if item.startswith('masks')]
         if masks:
             # Combine all masks efficiently
-            mask = torch.cat([x[f'masks_{modality}'] for modality in modalities], 
+            mask = torch.cat([x[f'masks_{modality}'] for modality in modalities],
                            dim=1).flatten(0, 1).float()
-            
+
             # Create mask matrix in one operation
             mask_matrix = mask.unsqueeze(-1) @ mask.unsqueeze(0)
-            
+
             # Apply mask
             logits.masked_fill_(~mask_matrix.bool(), float('-inf'))
             valid_entries = mask_matrix.bool()
-            
+
             # Compute loss only on valid entries
             loss = torch.logsumexp(logits[valid_entries].view(-1, valid_entries.sum(1).max()) / self.tau, dim=1).sum()
         else:
             loss = torch.logsumexp(logits / self.tau, dim=1).sum()
 
         # Compute positive examples efficiently
-        idx = torch.tensor([[i + j * n_tokens for j in range(len(modalities)) if j != k] 
+        idx = torch.tensor([[i + j * n_tokens for j in range(len(modalities)) if j != k]
                           for k in range(len(modalities)) for i in range(n_tokens)],
                          device=logits.device)
         pos_logits = torch.gather(logits, 1, idx)
-        
+
         if masks:
             valid_pos = pos_logits > float('-inf')
             pos_logits = pos_logits[valid_pos.any(dim=1)]
 
         loss += -torch.logsumexp(pos_logits / self.tau, dim=1).sum()
-        
+
         return {
             "contrastive_loss": loss / len(features),
             "logits": logits
         }
+
+class MILNCEPatch(nn.Module):
+    """Multiple Instance Learning Noise Contrastive Estimation (MIL-NCE) loss for patches.
+
+    See Latent MIM paper : https://arxiv.org/pdf/2407.15837
+
+    """
+
+    def __init__(self, tau=0.1):
+        super(MILNCEPatch, self).__init__()
+        self.tau = tau
+
+    def forward(self, x, y):
+        pred = x["predicted_tokens"]
+        target = y["target"]
+        bs, nt, d = pred.shape
+
+        pred = F.normalize(pred, p=2, dim=-1)
+        target = F.normalize(target, p=2, dim=-1)
+        scores = torch.einsum("npd,nqd->npq", pred, target) / self.tau
+        labels = torch.arange(nt, dtype=torch.long, device=pred.device)[
+            None
+        ].repeat(
+            bs, 1
+        )  # BxN
+        loss = F.cross_entropy(scores.flatten(0, 1), labels.flatten(0, 1)) * (
+            self.tau * 2
+        )
+
+        return {"latentMIM_loss": loss}
 
 class MSELoss(nn.Module):
     def __init__(self):

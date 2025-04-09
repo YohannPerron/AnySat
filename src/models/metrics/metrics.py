@@ -1,10 +1,11 @@
-from torchmetrics import Metric
-from torchmetrics import F1Score, Accuracy, JaccardIndex
-from torchmetrics.segmentation import MeanIoU
-import torch
 import os
-import torch.nn.functional as F
+
+import torch
 import torch.nn as nn
+import torch.nn.functional as F
+from torchmetrics import Accuracy, F1Score, JaccardIndex, Metric
+from torchmetrics.segmentation import MeanIoU
+
 
 class MetricsAccuracy(Metric):
     """
@@ -12,7 +13,7 @@ class MetricsAccuracy(Metric):
     Args:
         modalities (list): list of modalities used
         num_classes (int): number of classes
-        save_results (bool): if True saves prediction in a csv file 
+        save_results (bool): if True saves prediction in a csv file
         get_classes (bool): if True returns the classwise F1 Score
     """
 
@@ -48,7 +49,7 @@ class MetricsMonoModal(Metric):
     Args:
         modalities (list): list of modalities used
         num_classes (int): number of classes
-        save_results (bool): if True saves prediction in a csv file 
+        save_results (bool): if True saves prediction in a csv file
         get_classes (bool): if True returns the classwise F1 Score
     """
 
@@ -142,11 +143,11 @@ class NoMetrics(Metric):
                 for i, tensor in enumerate(self.saves[key]):
                     torch.save(tensor.cpu(), self.save_dir + key + str(i) + ".pt")
         return {}
-    
+
 class MetricsContrastif(Metric):
     """
     Computes metrics for contrastive. Given embeddings for all tokens, we compute the cosine similarity matrix.
-    The metric computed is the accuracy of the M -1 minimum distances of each line (except diagonal of course) 
+    The metric computed is the accuracy of the M -1 minimum distances of each line (except diagonal of course)
     being the same token across other modalities with M the number of modalities.
     Args:
         modalities (list): list of modalities used
@@ -172,7 +173,7 @@ class MetricsContrastif(Metric):
         labels = torch.cat([labels for _ in range(self.n_k)]).to(logits.device)
         for i in range(self.n_k):
             _, top_indices = torch.topk(logits[i * size:(i + 1) * size], k=self.n_k, dim=1, largest=True)
-            self.__dict__[self.modalities[i]] += (torch.sum(torch.tensor([top_indices[i, j] in labels[i] 
+            self.__dict__[self.modalities[i]] += (torch.sum(torch.tensor([top_indices[i, j] in labels[i]
                                                 for i in range(top_indices.size(0)) for j in range(self.n_k)])) - len(top_indices)) / (self.n_k - 1)
         self.count += len(logits)
 
@@ -185,7 +186,7 @@ class MetricsContrastif(Metric):
 class MetricsContrastifMulti(Metric):
     """
     Computes metrics for contrastive. Given embeddings for all tokens, we compute the cosine similarity matrix.
-    The metric computed is the accuracy of the M -1 minimum distances of each line (except diagonal of course) 
+    The metric computed is the accuracy of the M -1 minimum distances of each line (except diagonal of course)
     being the same token across other modalities with M the number of modalities.
     Args:
         modalities (list): list of modalities used
@@ -212,8 +213,8 @@ class MetricsContrastifMulti(Metric):
         labels = torch.cat([labels for _ in range(n_modalities)]).to(logits.device)
         for i in range(n_modalities):
             _, top_indices = torch.topk(logits[i * size:(i + 1) * size], k=n_modalities, dim=1, largest=True)
-            self.__dict__[dataset + "_" + modalities[i]] += (torch.sum(torch.tensor([top_indices[i, j] in labels[i] 
-                                                for i in range(top_indices.size(0)) for j in range(n_modalities)])) - 
+            self.__dict__[dataset + "_" + modalities[i]] += (torch.sum(torch.tensor([top_indices[i, j] in labels[i]
+                                                for i in range(top_indices.size(0)) for j in range(n_modalities)])) -
                                                 len(top_indices)) / (n_modalities - 1)
         self.__dict__[dataset + "_count"] += len(logits)
 
@@ -221,17 +222,17 @@ class MetricsContrastifMulti(Metric):
         dict = {}
         for dataset in self.modalities.keys():
             for i in range(len(self.modalities[dataset])):
-                dict['_'.join(['acc', dataset, self.modalities[dataset][i]])] = self.__dict__[dataset + "_" + 
+                dict['_'.join(['acc', dataset, self.modalities[dataset][i]])] = self.__dict__[dataset + "_" +
                                 self.modalities[dataset][i]] / self.__dict__[dataset + "_count"]
         return dict
-    
+
 class MetricsSemSeg(Metric):
     """
     Computes mIoU for semantic segmentation
     Args:
         modalities (list): list of modalities used
         num_classes (int): number of classes
-        save_results (bool): if True saves prediction in a csv file 
+        save_results (bool): if True saves prediction in a csv file
         get_classes (bool): if True returns the classwise F1 Score
     """
 
@@ -253,7 +254,7 @@ class MetricsSemSeg(Metric):
 
     def update(self, pred, gt):
         label = gt['label'].flatten(0, 1).long()
-        self.miou(torch.nn.functional.one_hot(pred.flatten(2, 3).permute(0, 2 ,1).flatten(0, 1).argmax(dim=1), num_classes=self.num_classes), 
+        self.miou(torch.nn.functional.one_hot(pred.flatten(2, 3).permute(0, 2 ,1).flatten(0, 1).argmax(dim=1), num_classes=self.num_classes),
                   torch.nn.functional.one_hot(label, num_classes=self.num_classes))
         if self.save_results:
             for i, name in enumerate(gt['name']):
@@ -281,7 +282,7 @@ class MetricsSemSegJ(Metric):
     Args:
         modalities (list): list of modalities used
         num_classes (int): number of classes
-        save_results (bool): if True saves prediction in a csv file 
+        save_results (bool): if True saves prediction in a csv file
         get_classes (bool): if True returns the classwise F1 Score
     """
 
@@ -305,7 +306,7 @@ class MetricsSemSegJ(Metric):
                 os.makedirs(save_dir)
 
     def update(self, pred, gt):
-        self.miou(pred.flatten(2, 3).permute(0, 2 ,1).flatten(0, 1).argmax(dim=1), 
+        self.miou(pred.flatten(2, 3).permute(0, 2 ,1).flatten(0, 1).argmax(dim=1),
                   gt['label'].flatten(1, 2).flatten(0, 1).long())
         if self.save_results:
             for i, name in enumerate(gt['name']):
@@ -574,7 +575,7 @@ class MetricsBinarySemSeg(Metric):
     Computes IoU Score for binary segmentation tasks
     Args:
         modalities (list): list of modalities used
-        save_results (bool): if True saves prediction in a csv file 
+        save_results (bool): if True saves prediction in a csv file
         threshold (float): threshold for binary prediction (default: 0.5)
     """
 
@@ -595,17 +596,17 @@ class MetricsBinarySemSeg(Metric):
     def update(self, pred, gt):
         # Convert predictions to binary using threshold
         pred_binary = (pred.sigmoid() > self.threshold).float()
-        
+
         # Convert to one-hot encoding
         pred_one_hot = torch.nn.functional.one_hot(
-            pred_binary.flatten(2, 3).permute(0, 2, 1).flatten(0, 1).long(), 
+            pred_binary.flatten(2, 3).permute(0, 2, 1).flatten(0, 1).long(),
             num_classes=2
         )
         gt_one_hot = torch.nn.functional.one_hot(
-            gt['label'].flatten(1, 2).flatten(0, 1).long(), 
+            gt['label'].flatten(1, 2).flatten(0, 1).long(),
             num_classes=2
         )
-        
+
         self.miou(pred_one_hot, gt_one_hot)
 
         if self.save_results:
@@ -620,16 +621,16 @@ class MetricsBinarySemSeg(Metric):
             'IoU_background': miou[0].item(),
             'IoU_foreground': miou[1].item()
         }
-        
+
         if self.save_results:
             out['results'] = self.results
-        
+
         return out
 
 
 class MetricsReg(Metric):
     """
-    Computes the Root Mean Square Error (RMSE) for regression tasks by applying a softplus activation 
+    Computes the Root Mean Square Error (RMSE) for regression tasks by applying a softplus activation
     to the predictions before computing the MSE loss.
 
     Args:
@@ -654,12 +655,12 @@ class MetricsReg(Metric):
     def update(self, pred, gt):
         self.mse += F.mse_loss(self.softplus(pred), gt['label']).cpu()
         self.total_samples += 1
-        
+
     def compute(self):
         rmse = torch.sqrt(self.mse / self.total_samples)
-        out = {'RMSE': rmse.item()}            
+        out = {'RMSE': rmse.item()}
         return out
-    
+
 class SegPangaea(Metric):
     """
     SegPangaea is a class for evaluating segmentation models using a confusion matrix approach.
@@ -675,13 +676,13 @@ class SegPangaea(Metric):
             Args:
                 pred (torch.Tensor): Model predictions
                 gt (dict): Dictionary containing ground truth labels under 'label' key
-                
+
         compute():
             Computes various metrics from the accumulated confusion matrix.
             Returns:
                 dict: Dictionary containing the following metrics:
                     - mIoU: Mean Intersection over Union across all classes
-                    - mF1: Mean F1 score across all classes  
+                    - mF1: Mean F1 score across all classes
                     - mAcc: Mean pixel accuracy
     """
 
@@ -734,4 +735,19 @@ class SegPangaea(Metric):
 
         return metrics
 
+
+class OutDiversity(Metric):
+    def __init__(self):
+        self.variance = torch.tensor(0.0)
+        self.count = torch.tensor(0)
+
+    def update(self, pred, batch):
+        #pred['predicted_tokens'] BLC
+        self.variance += torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum().cpu()
+        self.count += pred['predicted_tokens'].shape[0]
+
+
+    def compute(self):
+        variance = self.variance / self.count
+        return {'variance': variance.item()}
 
