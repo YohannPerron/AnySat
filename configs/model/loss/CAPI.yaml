@@ -1,0 +1,21 @@
+# @package _global_
+
+model.network.instance.predictor.out_dim: ${model.loss.num_classes}
+
+model.network.target_head:
+  _target_: src.models.networks.encoder.utils.capi.OnlineClustering
+  in_dim: ${model.network.encoder.embed_dim}
+  out_dim: ${model.loss.num_classes}
+  bias: True
+  n_sk_iter: 3
+  target_temp: 0.06
+  pred_temp: 0.12
+
+model:
+  loss:
+    _target_: models.losses.Losses
+    mix: {
+      crossentropy : 1.0,
+    }
+    modalities: ${modalities}
+    num_classes: 1024*4

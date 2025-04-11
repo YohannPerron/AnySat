@@ -98,14 +98,17 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
             labels_train = np.argmax(labels_train, axis=1)
             labels_val = np.argmax(labels_val, axis=1)
 
-        clf = LogisticRegression(max_iter=1000, n_jobs=-1, solver=SOLVER)
+        clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
         clf.fit(features_train, labels_train)
 
         pred_val = clf.predict(features_val)
         acc = accuracy_score(labels_val, pred_val)
         f1 = f1_score(labels_val, pred_val, average='macro')
 
+        if verbose:
+            print("End of evaluation on", dataset_name)
         return {'accuracy': acc, 'f1_score': f1}
+
     elif type == 'semseg':
         # Flatten the features and labels
         features_train = features_train.reshape(-1, features_train.shape[-1])
@@ -119,7 +122,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
         features_train = features_train[keep_mask]
 
         t_start = time.time()
-        clf = LogisticRegression(max_iter=1000, n_jobs=-1, solver=SOLVER)
+        clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
         clf.fit(features_train, labels_train)
         t_end = time.time()
         if verbose:
@@ -132,6 +135,9 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
 
         acc = accuracy_score(labels_val, pred_val)
         jaccard_score_val = jaccard_score(labels_val, pred_val, average='macro')
+
+        if verbose:
+            print("End of evaluation on", dataset_name)
         return {
             'accuracy': acc,
             'jaccard_score': jaccard_score_val
@@ -140,21 +146,14 @@ def eval_model_FT(datasets_config, model, device, verbose=False):
     """
     Evaluate the model on the validation set using linear probing(sklearn).
     """
-    L.seed_everything(42, workers=True)
+    # L.seed_everything(42, workers=True)
     metrics= {}
     for dataset in datasets_config:
         if verbose:
             print(f"Evaluating on dataset: {dataset['name']}")
-        datamodule = DataModule(train_dataset=hydra.utils.instantiate(dataset['train_dataset']),
-                                val_dataset=hydra.utils.instantiate(dataset['val_dataset']),
-                                test_dataset=hydra.utils.instantiate(dataset['test_dataset']),
-                                global_batch_size=BATCH_SIZE,
-                                num_nodes=1,
-                                num_devices=1,
-                                num_workers=NUM_WORKERS,)
-        datamodule.setup()
-        dataloader_train = datamodule.train_dataloader()
-        dataloader_val = datamodule.val_dataloader()
+
+        dataloader_train = dataset['train_dataloader']
+        dataloader_val = dataset['val_dataloader']
         result = train_LP(dataloader_train,
                                  dataloader_val,
                                  dataset_name=dataset['name'],
@@ -184,7 +183,7 @@ def eval_model_from_path(model_path, model_config, device = 'cuda', overwrite_da
     model.to(device)
 
     data_dir = config['data']['data_dir'] if overwrite_data_dir is None else overwrite_data_dir
-    list_dataconfig = get_dataset_config(data_dir=data_dir)
+    list_dataconfig = get_dataset_config(data_dir=data_dir, verbose=verbose)
     metrics = eval_model_FT(list_dataconfig, model, device, verbose=verbose)
     return metrics
 
@@ -216,7 +215,7 @@ EVAL_DATASETS = {
     }
 }
 
-def get_dataset_config(data_dir):
+def get_dataset_config(data_dir, verbose=False):
     list_dataconfig = []
     for dataset_name, dataset_config in EVAL_DATASETS.items():
         dataset_config_path = f"configs/dataset/{dataset_name}.yaml"
@@ -232,7 +231,9 @@ def get_dataset_config(data_dir):
                 target = target[k]
             target[ks[-1]] = v
 
-        #Handle transformes
+        # Handle transforms
+        if verbose:
+            print(f"Configuring dataset: {dataset_name}")
         dataconfig['train_dataset']['transform'] = None
         dataconfig['val_dataset']['transform'] = None
         dataconfig['test_dataset']['transform'] = None
@@ -243,12 +244,24 @@ def get_dataset_config(data_dir):
         dataconfig['test_dataset']['transform'] = dataset_config['test_augmentation']
         dataconfig['task_type'] = dataset_config['task_type']
 
+        datamodule = DataModule(train_dataset=hydra.utils.instantiate(dataconfig['train_dataset']),
+                                val_dataset=hydra.utils.instantiate(dataconfig['val_dataset']),
+                                test_dataset=hydra.utils.instantiate(dataconfig['test_dataset']),
+                                global_batch_size=BATCH_SIZE,
+                                num_nodes=1,
+                                num_devices=1,
+                                num_workers=NUM_WORKERS,
+                                verbose=verbose)
+        datamodule.setup()
+        dataconfig['train_dataloader'] = datamodule.train_dataloader()
+        dataconfig['val_dataloader'] = datamodule.val_dataloader()
+
         list_dataconfig.append(dataconfig)
     return list_dataconfig
 
 if __name__ == "__main__":
-    model_config = "logs/JZ/train/runs/20250404-18:22-Geom-ASt-loss-model/loss/0__AnySat_JEPA/.hydra/config.yaml"
-    model_path = "logs/JZ/train/runs/20250404-18:22-Geom-ASt-loss-model/loss/0__AnySat_JEPA/checkpoints/epoch_088.ckpt"
+    model_config = "logs/JZ/train/runs/20250410-11:22-Geom-ASt-loss/0_/.hydra/config.yaml"
+    model_path = "logs/JZ/train/runs/20250410-11:22-Geom-ASt-loss/0_/checkpoints/epoch_002.ckpt"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data_dir = '/home/yperron/code/AnySat/data/'
     metrics = eval_model_from_path(model_path, model_config, device, overwrite_data_dir=data_dir, verbose=True)

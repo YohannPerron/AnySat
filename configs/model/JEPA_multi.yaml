@@ -21,11 +21,15 @@ scheduler:
   factor: 0.1
   patience: 10
 
+target_head:
+  _target_: src.models.networks.encoder.utils.capi.LayerNormHead
+
 instance:
   _target_: src.models.module_JEPA.ModuleMulti
   optimizer: ${model.optimizer}
   scheduler: ${model.scheduler}
   network: ${model.network}
+  target_head: ${model.target_head}
   loss: ${model.loss}
   train_metrics: ${model.train_metrics}
   val_metrics: ${model.val_metrics}
@@ -40,5 +44,5 @@ instance:
   scales: ${dataset.scales}
   shapes: ${dataset.shapes}
   devices: ${trainer.devices}
-  eval_every: 1
+  eval_every: 2
   path_to_data: ${paths.data_dir}

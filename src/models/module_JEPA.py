@@ -1,4 +1,5 @@
 import copy
+import datetime
 
 import pandas as pd
 import torch
@@ -55,6 +56,7 @@ class Module(LightningModule):
 
         self.momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
+
 
     def forward(self, x):
         mask_enc, mask_pred = self.mask_collator(x)
@@ -159,6 +161,7 @@ class Module(LightningModule):
 class ModuleMulti(LightningModule):
     def __init__(self,
                  network,
+                 target_head,
                  loss,
                  train_metrics,
                  val_metrics,
@@ -181,6 +184,7 @@ class ModuleMulti(LightningModule):
         self.target_encoder = copy.deepcopy(self.model.encoder)
         for p in self.target_encoder.parameters():
             p.requires_grad = False
+        self.target_head = target_head
         self.loss = loss
         self.train_metrics = train_metrics
         self.val_metrics = val_metrics
@@ -208,21 +212,23 @@ class ModuleMulti(LightningModule):
         self.momentum_scheduler = (ema[0] + i*(ema[1]-ema[0])/(ipe*num_epochs*ipe_scale)
                           for i in range(int(ipe*num_epochs*ipe_scale)+1))
 
+        self.config_FT = get_dataset_config(self.path_to_data)
+
     def forward(self, x):
         mask_enc, mask_pred = self.mask_collator['_'.join([x['dataset'], str(x['scale'])])](x)
         with torch.no_grad():
             h = self.target_encoder(x)[:, 1:, :]
-            h = F.layer_norm(h, (h.size(-1),))  # normalize over feature-dim
+            h,target_loss = self.target_head(h)  # apply target head
             B = len(h)
             # -- create targets (masked regions of h)
             h = apply_masks(h, mask_pred)
             h = repeat_interleave_batch(h, B, repeat=len(mask_enc))
-        return self.model(x, mask_enc, mask_pred), h
+        return self.model(x, mask_enc, mask_pred), h, target_loss
 
     def training_step(self, batch, batch_idx):
-        pred, target = self.forward(batch)
+        pred, target, target_loss = self.forward(batch)
         batch['target'] = target
-        loss = self.loss(pred, batch, average=True)
+        loss = self.loss(pred, batch, average=True, target_loss=target_loss)
         if "logits" in loss.keys():
             loss.pop("logits")
         for metric_name, metric_value in loss.items():
@@ -243,9 +249,9 @@ class ModuleMulti(LightningModule):
 
     @torch.no_grad()
     def validation_step(self, batch, batch_idx):
-        pred, target = self.forward(batch)
+        pred, target, target_loss = self.forward(batch)
         batch['target'] = target
-        loss = self.loss(pred, batch, average=True)
+        loss = self.loss(pred, batch, average=True, target_loss=target_loss)
         if "logits" in loss.keys():
             # self.val_metrics.update(loss["logits"], dataset=batch['dataset'])
             loss.pop("logits")
@@ -264,17 +270,16 @@ class ModuleMulti(LightningModule):
         metrics = self.val_metrics.compute()
 
         if self.current_epoch % self.eval_every == 0:
-            dataset_config = get_dataset_config(self.path_to_data)
+            log.info("Evaluating FT metrics")
             #spread dataset_config (List) on all the ranks
-            rank_dataset_config = [config for i, config in enumerate(dataset_config) if i%self.trainer.world_size == self.global_rank]
+            rank_dataset_config = [config for i, config in enumerate(self.config_FT) if i%self.trainer.world_size == self.global_rank]
             FT_metrics = eval_model_FT(rank_dataset_config, self.model.encoder, device=self.device, verbose=False)
 
             #gather FT_metrics on all the ranks
             FT_metrics_all = [None] * self.trainer.world_size
             torch.distributed.all_gather_object(object_list=FT_metrics_all, obj=FT_metrics)
             # FT_metrics_all = self.all_gather(FT_metrics)
-            if self.trainer.is_global_zero:
-                print(f"FT_metrics_all: {FT_metrics_all}")
+            log.info(f"FT_metrics_all: {FT_metrics_all}")
             for FT_metrics in FT_metrics_all:
                 metrics.update(FT_metrics)
 
@@ -289,9 +294,9 @@ class ModuleMulti(LightningModule):
 
     @torch.no_grad()
     def test_step(self, batch, batch_idx):
-        pred, target = self.forward(batch)
+        pred, target, target_loss = self.forward(batch)
         batch['target'] = target
-        loss = self.loss(pred, batch, average=True)
+        loss = self.loss(pred, batch, average=True, target_loss=target_loss)
         if "logits" in loss.keys():
             self.test_metrics.update(loss["logits"], dataset=batch['dataset'])
             loss.pop("logits")
@@ -308,7 +313,7 @@ class ModuleMulti(LightningModule):
                 on_step=False,
                 on_epoch=True,
             )
-    def on_train_start(self):
+    def on_train_epoch_start(self):
         log.info(f"Epoch: {self.current_epoch}")
         return super().on_train_start()
 

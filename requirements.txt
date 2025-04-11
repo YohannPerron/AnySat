@@ -32,3 +32,4 @@ geopandas==0.14.4
 # flash-attn
 # sh            # for running bash commands in some tests (linux/macos only)
 tifffile
+opencv-python

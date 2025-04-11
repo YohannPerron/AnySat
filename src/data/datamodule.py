@@ -1,9 +1,11 @@
-import lightning as L
-from torch.utils.data import DataLoader, Sampler, DistributedSampler
 import random
 import time
-from typing import List, Tuple, Any, Iterator, Dict, Union, Optional
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union
+
+import lightning as L
 import torch.distributed as dist
+from torch.utils.data import DataLoader, DistributedSampler, Sampler
+
 
 class DataModule(L.LightningDataModule):
     def __init__(
@@ -17,8 +19,10 @@ class DataModule(L.LightningDataModule):
         num_devices=1,
         stop_iteration_train=None,
         stop_iteration_val=None,
+        verbose=True
     ):
         super().__init__()
+        self.verbose = verbose
         self._builders = {
             "train": train_dataset,
             "val": val_dataset,
@@ -28,7 +32,8 @@ class DataModule(L.LightningDataModule):
         self.stop_iteration_train = stop_iteration_train
         self.stop_iteration_val = stop_iteration_val
         self.batch_size = global_batch_size // (num_nodes * num_devices)
-        print(f"Each GPU will receive {self.batch_size} images")
+        if self.verbose:
+            print(f"Each GPU will receive {self.batch_size} images")
         self.save_hyperparameters(logger=False)
 
     @property
@@ -44,18 +49,22 @@ class DataModule(L.LightningDataModule):
             stage (str): stage of the datamodule
                 Is be one of "fit" or "test" or None
         """
-        print("Stage", stage)
+        if self.verbose:
+            print("Stage", stage)
         start_time = time.time()
         if stage == "fit" or stage is None:
             self.train_dataset = self._builders["train"]()
             self.val_dataset = self._builders["val"]()
-            print(f"Train dataset size: {len(self.train_dataset)}")
-            print(f"Val dataset size: {len(self.val_dataset)}")
+            if self.verbose:
+                print(f"Train dataset size: {len(self.train_dataset)}")
+                print(f"Val dataset size: {len(self.val_dataset)}")
         else:
             self.test_dataset = self._builders["test"]()
-            print(f"Test dataset size: {len(self.test_dataset)}")
+            if self.verbose:
+                print(f"Test dataset size: {len(self.test_dataset)}")
         end_time = time.time()
-        print(f"Setup took {(end_time - start_time):.2f} seconds")
+        if self.verbose:
+            print(f"Setup took {(end_time - start_time):.2f} seconds")
 
     def train_dataloader(self):
         return DataLoaderStop(
@@ -91,7 +100,7 @@ class DataModule(L.LightningDataModule):
             num_workers=self.num_workers,
             collate_fn=self.test_dataset.collate_fn,
         )
-    
+
 class DataModuleMulti(L.LightningDataModule):
     def __init__(
         self,
@@ -178,7 +187,7 @@ class DataModuleMulti(L.LightningDataModule):
                     collate_fn=self.train_dataset.collate_fn[dataset],
                     shuffle=True
                 )
-        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.train_dataset.scales, 
+        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.train_dataset.scales,
             stop_iteration=self.stop_iteration_train, weights_datasets=self.weights_datasets)
 
     def val_dataloader(self):
@@ -210,7 +219,7 @@ class DataModuleMulti(L.LightningDataModule):
                     collate_fn=self.val_dataset.collate_fn[dataset],
                     shuffle=False
                 )
-        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.val_dataset.scales, 
+        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.val_dataset.scales,
             stop_iteration=self.stop_iteration_val, weights_datasets=self.weights_datasets)
 
     def test_dataloader(self):
@@ -242,21 +251,21 @@ class DataModuleMulti(L.LightningDataModule):
                     collate_fn=self.test_dataset.collate_fn[dataset],
                     shuffle=False
                 )
-        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.test_dataset.scales, 
+        return MultiBatchDataLoader(dataloaders=dls, cycle=False, scales=self.test_dataset.scales,
             stop_iteration=None, weights_datasets=self.weights_datasets)
 
 class MultiBatchDataLoader(DataLoader):
-    def __init__(self, dataloaders: Dict[str, DataLoader], scales: Dict[str, List[int]], cycle: bool = True, 
+    def __init__(self, dataloaders: Dict[str, DataLoader], scales: Dict[str, List[int]], cycle: bool = True,
         stop_iteration = None, weights_datasets = None, **kwargs):
         if not dataloaders:
             raise ValueError("dataloaders dictionary cannot be empty")
-        
+
         if not all(isinstance(dl, DataLoader) for dl in dataloaders.values()):
             raise TypeError("All values in dataloaders must be DataLoader instances")
-            
+
         if set(scales.keys()) != set(dataloaders.keys()):
             raise ValueError("scales and dataloaders must have matching keys")
-        
+
         self.dataloaders = dataloaders
         self.scales = scales
         self.cycle = cycle
@@ -267,7 +276,7 @@ class MultiBatchDataLoader(DataLoader):
         # Cache length calculations
         self._max_length = max(len(dataloader) for dataloader in self.dataloaders.values())
         self._sum_length = sum(len(dataloader) for dataloader in self.dataloaders.values())
-        
+
         if self.cycle:
             len_data = self._max_length * len(self.dataloaders)
         else:
@@ -277,13 +286,13 @@ class MultiBatchDataLoader(DataLoader):
         self.iterators = {}
         self.exhausted_loaders = set()
         self.epoch = 0  # Add epoch counter
-        
+
         super().__init__(dataset=range(self.length), batch_size=1, shuffle=False)
 
         # Set up distributed training parameters
         self.world_size = dist.get_world_size() if dist.is_initialized() else 1
         self.rank = dist.get_rank() if dist.is_initialized() else 0
-        
+
         if dist.is_initialized():
             self.base_seed = random.randint(0, 2**32-1)
             dist.broadcast_object_list([self.base_seed], src=0)
@@ -292,17 +301,17 @@ class MultiBatchDataLoader(DataLoader):
 
     def __iter__(self):
         self.epoch += 1
-        
+
         # Set epoch for distributed samplers
         if dist.is_initialized():
             for dataloader in self.dataloaders.values():
                 if hasattr(dataloader, 'sampler') and hasattr(dataloader.sampler, 'set_epoch'):
                     dataloader.sampler.set_epoch(self.epoch)
-        
+
         # Reset iterators and state
         self.iterators = {name: iter(dataloader) for name, dataloader in self.dataloaders.items()}
         self.exhausted_loaders = set()
-            
+
         return self
 
     def __next__(self):
@@ -318,7 +327,7 @@ class MultiBatchDataLoader(DataLoader):
                 available_datasets = self.dataset_names
             else:
                 raise StopIteration
-                
+
         dataset_name = random.choice([dataset for dataset in available_datasets for _ in range (self.weights_datasets[dataset])])
 
         try:

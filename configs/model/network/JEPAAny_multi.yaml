@@ -9,6 +9,7 @@ instance:
     num_patches: ${dataset.num_patches}
     embed_dim: ${model.network.encoder.embed_dim}
     predictor_embed_dim: ${model.network.encoder.embed_dim}
+    out_dim: ${model.network.encoder.embed_dim}
     depth: 4
     num_heads: 16
     mlp_ratio: 4.0
@@ -16,5 +17,4 @@ instance:
     drop_path_rate: 0.0
     scales: ${dataset.scales}
   ratio: 0.5
-  
-  
+

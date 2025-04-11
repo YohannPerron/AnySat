@@ -51,6 +51,8 @@ class CrossEntropy(nn.Module):
         Returns:
             torch.Tensor: CrossEntropy loss between x and y: torch.Tensor([B])
         """
+        if isinstance(x, dict):
+            return {"cross_entropy_loss": nn.functional.cross_entropy(x["predicted_tokens"], y["target"])}
         return {"cross_entropy_loss": nn.functional.cross_entropy(x, y["label"])}
 
 class BCEWithLogs(nn.Module):
@@ -248,7 +250,7 @@ class Losses(nn.Module):
             except KeyError:
                 raise KeyError(f"Loss {m} not found in {LOSSES.keys()}")
 
-    def forward(self, x, y, average=True):
+    def forward(self, x, y, average=True, target_loss=False):
         """Computes the losses.
         Args:
             x: dict that contains "gps": torch.Tensor Bx2 or "label": torch.Tensor BxN
@@ -265,4 +267,9 @@ class Losses(nn.Module):
                     v = AVERAGE[average](v)
                     output["loss"] += weight * v
                 output[k] = v
+
+        if target_loss:
+            output["target_loss"] = target_loss
+            output["loss"] += target_loss
+
         return output

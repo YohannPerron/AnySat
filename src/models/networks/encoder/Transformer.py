@@ -1,10 +1,14 @@
-import torch
-from torch import nn
 import math
 
+import torch
+from torch import nn
+
+from models.networks.encoder.utils.pos_embed import (
+    get_2d_sincos_pos_embed_with_resolution,
+    get_2d_sincos_pos_embed_with_scale)
 from models.networks.encoder.utils.utils import trunc_normal_
 from models.networks.encoder.utils.utils_ViT import Block, BlockTransformer
-from models.networks.encoder.utils.pos_embed import get_2d_sincos_pos_embed_with_scale, get_2d_sincos_pos_embed_with_resolution
+
 
 class Transformer(nn.Module):
     def __init__(
@@ -76,7 +80,7 @@ class Transformer(nn.Module):
 
         if keep_subpatch:
             return x[:, 0], x[:, 1:]
-        
+
         return x[:, 0]
 
 class TransformerMulti(nn.Module):
@@ -158,9 +162,9 @@ class TransformerMulti(nn.Module):
 
         if keep_subpatch:
             return x[:, 0], x[:, 1:]
-        
+
         return x[:, 0]
-    
+
     def forward_release(self, x, modality, scale, keep_subpatch=False):
         B, N, C = x.shape
         # -- concat class token to x
@@ -181,7 +185,7 @@ class TransformerMulti(nn.Module):
 
         if keep_subpatch:
             return x[:, 0], x[:, 1:]
-        
+
         return x[:, 0]
 
 
@@ -192,6 +196,7 @@ class VisionTransformerPredictor(nn.Module):
         num_patches,
         embed_dim=768,
         predictor_embed_dim=384,
+        out_dim=768,
         depth=6,
         num_heads=12,
         mlp_ratio=4.0,
@@ -222,7 +227,7 @@ class VisionTransformerPredictor(nn.Module):
                  attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, flash_attn=flash_attn)
             for i in range(depth)])
         self.predictor_norm = norm_layer(predictor_embed_dim)
-        self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        self.predictor_proj = nn.Linear(predictor_embed_dim, out_dim, bias=True)
         # ------
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
@@ -300,6 +305,7 @@ class VisionTransformerPredictorMulti(nn.Module):
         num_patches,
         embed_dim=768,
         predictor_embed_dim=384,
+        out_dim=768,
         depth=6,
         num_heads=12,
         mlp_ratio=4.0,
@@ -323,7 +329,7 @@ class VisionTransformerPredictorMulti(nn.Module):
         for dataset in self.datasets:
             for scale in scales[dataset]:
                 num_p = num_patches[dataset] // (scale * scale)
-                self.predictor_pos_embed['_'.join([dataset, str(scale)])] = get_2d_sincos_pos_embed_with_scale(embed_dim, 
+                self.predictor_pos_embed['_'.join([dataset, str(scale)])] = get_2d_sincos_pos_embed_with_scale(embed_dim,
                                                             int(num_p ** .5), scale, cls_token=True)
         # --
         self.predictor_blocks = nn.ModuleList([
@@ -331,7 +337,7 @@ class VisionTransformerPredictorMulti(nn.Module):
                  attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, flash_attn=flash_attn)
             for i in range(depth)])
         self.predictor_norm = norm_layer(predictor_embed_dim)
-        self.predictor_proj = nn.Linear(predictor_embed_dim, embed_dim, bias=True)
+        self.predictor_proj = nn.Linear(predictor_embed_dim, out_dim, bias=True)
         # ------
         self.init_std = init_std
         trunc_normal_(self.mask_token, std=self.init_std)
@@ -421,4 +427,3 @@ def apply_masks(x, masks):
         mask_keep = m.unsqueeze(-1).repeat(1, 1, x.size(-1))
         all_x += [torch.gather(x, dim=1, index=mask_keep)]
     return torch.cat(all_x, dim=0)
- 
