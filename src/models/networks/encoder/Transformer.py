@@ -7,7 +7,8 @@ from models.networks.encoder.utils.pos_embed import (
     get_2d_sincos_pos_embed_with_resolution,
     get_2d_sincos_pos_embed_with_scale)
 from models.networks.encoder.utils.utils import trunc_normal_
-from models.networks.encoder.utils.utils_ViT import Block, BlockTransformer
+from models.networks.encoder.utils.utils_ViT import (Block, BlockTransformer,
+                                                     VanillaCABlock)
 
 
 class Transformer(nn.Module):
@@ -365,14 +366,14 @@ class VisionTransformerPredictorMulti(nn.Module):
             if m.bias is not None:
                 nn.init.constant_(m.bias, 0)
 
-    def forward(self, x, masks_x, masks, dataset, scale):
-        assert (masks is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
+    def forward(self, x, masks_x, masks_out, dataset, scale):
+        assert (masks_out is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
 
         if not isinstance(masks_x, list):
             masks_x = [masks_x]
 
-        if not isinstance(masks, list):
-            masks = [masks]
+        if not isinstance(masks_out, list):
+            masks_out = [masks_out]
 
         # -- Batch Size
         B = len(x) // len(masks_x)
@@ -389,15 +390,15 @@ class VisionTransformerPredictorMulti(nn.Module):
 
         # -- concat mask tokens to x
         pos_embs = pos_embed.repeat(B, 1, 1)
-        pos_embs = apply_masks(pos_embs, masks)
+        pos_embs = apply_masks(pos_embs, masks_out)
         pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
         # --
         pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
         # --
         pred_tokens += pos_embs
-        x = x.repeat(len(masks), 1, 1)
+        x = x.repeat(len(masks_out), 1, 1)
         x = torch.cat([self.cls_token.expand(x.shape[0], -1, -1), x, pred_tokens], dim=1)
-        mask_final = torch.cat([torch.cat(masks_x + [masks[i]], dim=1) for i in range (len(masks))], dim=0)
+        mask_final = torch.cat([torch.cat(masks_x + [masks_out[i]], dim=1) for i in range (len(masks_out))], dim=0)
         # -- fwd prop
         for blk in self.predictor_blocks:
             x = blk(x)
@@ -408,6 +409,113 @@ class VisionTransformerPredictorMulti(nn.Module):
         x = self.predictor_proj(x)
 
         return x
+
+class CrossAttentionPredictorMulti(nn.Module):
+    """ Vision Transformer """
+    def __init__(
+        self,
+        num_patches,
+        embed_dim=768,
+        predictor_embed_dim=384,
+        out_dim=768,
+        depth=6,
+        num_heads=12,
+        mlp_ratio=4.0,
+        qkv_bias=True,
+        attn_drop_rate=0.0,
+        drop_path_rate=0.0,
+        norm_layer=nn.LayerNorm,
+        init_std=0.02,
+        scales={},
+        flash_attn: bool = True,
+    ):
+        super().__init__()
+        self.predictor_embed = nn.Linear(embed_dim, predictor_embed_dim, bias=True)
+        self.mask_token = nn.Parameter(torch.zeros(1, 1, predictor_embed_dim))
+
+        dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
+        # --
+        self.datasets = list(scales.keys())
+        self.predictor_pos_embed = {}
+        for dataset in self.datasets:
+            for scale in scales[dataset]:
+                num_p = num_patches[dataset] // (scale * scale)
+                self.predictor_pos_embed['_'.join([dataset, str(scale)])] = get_2d_sincos_pos_embed_with_scale(embed_dim,
+                                                            int(num_p ** .5), scale, cls_token=True)
+        # --
+        self.predictor_blocks = nn.ModuleList([
+            VanillaCABlock(dim=embed_dim, num_heads=num_heads, mlp_ratio=mlp_ratio, qkv_bias=qkv_bias,
+                 attn_drop=attn_drop_rate, drop_path=dpr[i], norm_layer=norm_layer, flash_attn=flash_attn)
+            for i in range(depth)])
+        self.predictor_norm = norm_layer(predictor_embed_dim)
+        self.predictor_proj = nn.Linear(predictor_embed_dim, out_dim, bias=True)
+        # ------
+        self.init_std = init_std
+        trunc_normal_(self.mask_token, std=self.init_std)
+        self.apply(self._init_weights)
+        self.fix_init_weight()
+
+    def fix_init_weight(self):
+        def rescale(param, layer_id):
+            param.div_(math.sqrt(2.0 * layer_id))
+
+        for layer_id, layer in enumerate(self.predictor_blocks):
+            rescale(layer.attn.proj.weight.data, layer_id + 1)
+            rescale(layer.mlp.fc2.weight.data, layer_id + 1)
+
+    def _init_weights(self, m):
+        if isinstance(m, nn.Linear):
+            trunc_normal_(m.weight, std=self.init_std)
+            if isinstance(m, nn.Linear) and m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+        elif isinstance(m, nn.LayerNorm):
+            nn.init.constant_(m.bias, 0)
+            nn.init.constant_(m.weight, 1.0)
+        elif isinstance(m, nn.Conv2d):
+            trunc_normal_(m.weight, std=self.init_std)
+            if m.bias is not None:
+                nn.init.constant_(m.bias, 0)
+
+    def forward(self, x, masks_x, masks_out, dataset, scale):
+        assert (masks_out is not None) and (masks_x is not None), 'Cannot run predictor without mask indices'
+
+        if not isinstance(masks_x, list):
+            masks_x = [masks_x]
+
+        if not isinstance(masks_out, list):
+            masks_out = [masks_out]
+
+        # -- Batch Size
+        B = len(x) // len(masks_x)
+
+        # -- map from encoder-dim to pedictor-dim
+        x = self.predictor_embed(x)
+
+        # -- add positional embedding to x tokens
+        pos_embed = self.predictor_pos_embed['_'.join([dataset, str(scale)])].to(x.device)
+        x_pos_embed = pos_embed.repeat(B, 1, 1)
+        x += apply_masks(x_pos_embed, masks_x)
+
+        _, N_ctxt, D = x.shape
+
+        # -- concat mask tokens to x
+        pos_embs = pos_embed.repeat(B, 1, 1)
+        pos_embs = apply_masks(pos_embs, masks_out)
+        pos_embs = repeat_interleave_batch(pos_embs, B, repeat=len(masks_x))
+        # --
+        pred_tokens = self.mask_token.repeat(pos_embs.size(0), pos_embs.size(1), 1)
+        # --
+        pred_tokens += pos_embs
+        x = x.repeat(len(masks_out), 1, 1)
+
+        # -- fwd prop
+        for blk in self.predictor_blocks:
+            pred_tokens = blk(pred_tokens, x)
+
+        pred_tokens = self.predictor_norm(pred_tokens)
+        pred_tokens = self.predictor_proj(pred_tokens)
+
+        return pred_tokens
 
 def repeat_interleave_batch(x, B, repeat):
     N = len(x) // B

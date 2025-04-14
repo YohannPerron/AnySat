@@ -27,7 +27,7 @@ class Attention(nn.Module):
         self.num_heads = num_heads
         self.head_dim = dim // num_heads
         self.scale = self.head_dim ** -0.5
-        
+
         if use_flash_attn:
             try:
                 from flash_attn import flash_attn_func
@@ -46,13 +46,18 @@ class Attention(nn.Module):
 
     def forward(self, x):
         B, N, C = x.shape
-        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 3, 1, 4)
+        qkv = self.qkv(x).reshape(B, N, 3, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4) # 3BNHC
         q, k, v = qkv.unbind(0)
         q, k = self.q_norm(q), self.k_norm(k)
 
         if self.flash_attn_func is not None:
             x = self.flash_attn_func(q, k, v, causal=False)
         else:
+            #BNHC -> BHNC
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+
             attn = (q @ k.transpose(-2, -1)) * self.scale
             attn = attn.softmax(dim=-1)
             attn = self.attn_drop(attn)
@@ -118,6 +123,117 @@ class Block(nn.Module):
 
     def forward(self, x):
         x = x + self.drop_path1(self.ls1(self.attn(self.norm1(x))))
+        x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
+        return x
+
+class VanillaCrossAttention(nn.Module):
+    fused_attn: Final[bool]
+
+    def __init__(
+            self,
+            dim,
+            num_heads=8,
+            qkv_bias=False,
+            qk_norm=False,
+            attn_drop=0.,
+            proj_drop=0.,
+            norm_layer=nn.LayerNorm,
+            use_flash_attn=True
+    ):
+        super().__init__()
+        assert dim % num_heads == 0, 'dim should be divisible by num_heads'
+        self.num_heads = num_heads
+        self.head_dim = dim // num_heads
+        self.scale = self.head_dim ** -0.5
+
+        if use_flash_attn:
+            try:
+                from flash_attn import flash_attn_func
+                self.flash_attn_func = flash_attn_func
+            except ImportError:
+                raise ImportError("flash-attn is not installed. Please install it with `pip install flash-attn`")
+        else:
+            self.flash_attn_func = None
+
+        self.q = nn.Linear(dim, dim * 1, bias=qkv_bias)
+        self.kv = nn.Linear(dim, dim * 2, bias=qkv_bias)
+        self.q_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.k_norm = norm_layer(self.head_dim) if qk_norm else nn.Identity()
+        self.attn_drop = nn.Dropout(attn_drop)
+        self.proj = nn.Linear(dim, dim)
+        self.proj_drop = nn.Dropout(proj_drop)
+
+    def forward(self, x_q, x_kv):
+        B, N_q, C = x_q.shape
+        N_kv = x_kv.shape[1]
+        q = self.q(x_q).reshape(B, N_q, self.num_heads, self.head_dim)# BNHC
+        kv = self.kv(x_kv).reshape(B, N_kv, 2, self.num_heads, self.head_dim).permute(2, 0, 1, 3, 4) # 2BNHC
+        k, v = kv.unbind(0)
+        q, k = self.q_norm(q), self.k_norm(k)
+
+        if self.flash_attn_func is not None:
+            x = self.flash_attn_func(q, k, v, causal=False)
+        else:
+            #BNHC -> BHNC
+            q = q.transpose(1, 2)
+            k = k.transpose(1, 2)
+            v = v.transpose(1, 2)
+
+            attn = (q @ k.transpose(-2, -1)) * self.scale
+            attn = attn.softmax(dim=-1)
+            attn = self.attn_drop(attn)
+            x = (attn @ v)
+
+        x = x.transpose(1, 2).reshape(B, N_q, C)
+        x = self.proj(x)
+        x = self.proj_drop(x)
+        return x
+
+class VanillaCABlock(nn.Module):
+
+    def __init__(
+            self,
+            dim,
+            num_heads,
+            mlp_ratio=4.,
+            qkv_bias=False,
+            qk_norm=False,
+            proj_drop=0.,
+            attn_drop=0.,
+            init_values=None,
+            drop_path=0.,
+            act_layer=nn.GELU,
+            norm_layer=nn.LayerNorm,
+            flash_attn=True,
+    ):
+        super().__init__()
+        self.norm1 = norm_layer(dim)
+        self.norm1_kv = norm_layer(dim)
+        self.attn = VanillaCrossAttention(
+            dim,
+            num_heads=num_heads,
+            qkv_bias=qkv_bias,
+            qk_norm=qk_norm,
+            attn_drop=attn_drop,
+            proj_drop=proj_drop,
+            norm_layer=norm_layer,
+            use_flash_attn=flash_attn,
+        )
+        self.ls1 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path1 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+        self.norm2 = norm_layer(dim)
+        self.mlp = Mlp(
+            in_features=dim,
+            hidden_features=int(dim * mlp_ratio),
+            act_layer=act_layer,
+            drop=proj_drop,
+        )
+        self.ls2 = LayerScale(dim, init_values=init_values) if init_values else nn.Identity()
+        self.drop_path2 = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+
+    def forward(self, x_q, x_kv):
+        x = x_q + self.drop_path1(self.ls1(self.attn(self.norm1(x_q), self.norm1_kv(x_kv))))
         x = x + self.drop_path2(self.ls2(self.mlp(self.norm2(x))))
         return x
 
