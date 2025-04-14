@@ -199,10 +199,10 @@ EVAL_DATASETS = {
         "task_type": "classif",
         "num_workers": 0,
         "batch_size": 16,
-        "max_iter_train": 50,
-        "max_iter_test": 50,
-        "semseg_drop_rate": 0.99,
-        'overrides': {'train_dataset.max_samples': 1000,}
+        "max_iter_train": 100,
+        "max_iter_test": 100,
+        "semseg_drop_rate": 0,
+        'overrides': {'train_dataset.max_samples': 2000,}
     },
     # "BurnScars": {
     #     "train_augmentation": Identity(),
