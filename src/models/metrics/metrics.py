@@ -738,6 +738,7 @@ class SegPangaea(Metric):
 
 class OutDiversity(Metric):
     def __init__(self):
+        super().__init__()
         self.add_state("variance", torch.tensor(0.0, dtype=torch.float64))
         self.add_state("count", torch.tensor(0, dtype=torch.int64))
 
