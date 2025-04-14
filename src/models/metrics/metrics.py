@@ -330,21 +330,6 @@ import numpy as np
 import torch
 
 
-class Metric(object):
-    """Base class for all metrics.
-    From: https://github.com/pytorch/tnt/blob/master/torchnet/meter/meter.py
-    """
-
-    def reset(self):
-        pass
-
-    def add(self):
-        pass
-
-    def value(self):
-        pass
-
-
 class ConfusionMatrix(Metric):
     """Constructs a confusion matrix for a multi-class classification problems.
 
