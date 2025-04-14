@@ -16,15 +16,10 @@ from models.networks.encoder.utils.pos_embed import (
     get_2d_sincos_pos_embed_with_resolution,
     get_2d_sincos_pos_embed_with_scale)
 
-NUM_WORKERS = 2
-BATCH_SIZE = 4
-MAX_ITER_TRAIN = 50
-MAX_ITER_TEST = 50
-SEMSEG_DROP_RATE=0.99
 SOLVER = 'lbfgs'
 
 @torch.no_grad()
-def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model, device, verbose=False):
+def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model, device, max_iter_train, max_iter_test, semseg_drop_rate, verbose=False):
     """
     Evaluate the model on the validation set using linear probing(sklearn).
     """
@@ -47,7 +42,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
             print("Sampling train set")
         for i, batch in enumerate(dataloader_train):
             if verbose:
-                print(f"{i}/{MAX_ITER_TRAIN}", end='\r')
+                print(f"{i}/{max_iter_train}", end='\r')
             label = batch.pop('label')
             batch = {k: v.to(device) for k, v in batch.items() if hasattr(v, 'to')}
             out = model.forward_release(batch, scale, output=output_type, output_modality='')
@@ -57,7 +52,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
                 print(label.shape)
             features_train.append(out.cpu())
             labels_train.append(label.cpu())
-            if i>= MAX_ITER_TRAIN:
+            if i>= max_iter_train:
                 break
         if verbose:
             print()
@@ -66,7 +61,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
             print("Sampling val set")
         for i, batch in enumerate(dataloader_val):
             if verbose:
-                print(f"{i}/{MAX_ITER_TEST}", end='\r')
+                print(f"{i}/{max_iter_test}", end='\r')
             label = batch.pop('label')
             # for k, v in batch.items():
             #     try:
@@ -82,7 +77,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
                 print(label.shape)
             features_val.append(out.cpu())
             labels_val.append(label.cpu())
-            if i>= MAX_ITER_TEST:
+            if i>= max_iter_test:
                 break
         if verbose:
             print()
@@ -93,13 +88,22 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
     features_val = torch.cat(features_val, dim=0).numpy()
     labels_val = torch.cat(labels_val, dim=0).numpy()
 
+    #normalize features
+    mean = np.mean(features_train, axis=0)
+    std = np.std(features_train, axis=0)
+    features_train = (features_train - mean) / std
+    features_val = (features_val - mean) / std
+
+
     if type == 'classif':
         while len(labels_train.shape)>1:
             labels_train = np.argmax(labels_train, axis=1)
             labels_val = np.argmax(labels_val, axis=1)
 
+        t_start = time.time()
         clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
         clf.fit(features_train, labels_train)
+        t_end = time.time()
 
         pred_val = clf.predict(features_val)
         acc = accuracy_score(labels_val, pred_val)
@@ -107,7 +111,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
 
         if verbose:
             print("End of evaluation on", dataset_name)
-        return {'accuracy': acc, 'f1_score': f1}
+        return {'accuracy': acc, 'f1_score': f1, 'time_LP': t_end - t_start }
 
     elif type == 'semseg':
         # Flatten the features and labels
@@ -116,8 +120,8 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
         labels_train = labels_train.reshape(-1)
         labels_val = labels_val.reshape(-1)
 
-        # Select SEMSEG_DROP_RATE of the training pixel to drop
-        keep_mask = np.random.rand(*labels_train.shape) > SEMSEG_DROP_RATE
+        # Select semseg_drop_rate of the training pixel to drop
+        keep_mask = np.random.rand(*labels_train.shape) > semseg_drop_rate
         labels_train = labels_train[keep_mask]
         features_train = features_train[keep_mask]
 
@@ -125,14 +129,8 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
         clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
         clf.fit(features_train, labels_train)
         t_end = time.time()
-        if verbose:
-            print(f"train time: {t_end - t_start:.2f} seconds")
-        t_start = time.time()
-        pred_val = clf.predict(features_val)
-        t_end = time.time()
-        if verbose:
-            print(f"test time: {t_end - t_start:.2f} seconds")
 
+        pred_val = clf.predict(features_val)
         acc = accuracy_score(labels_val, pred_val)
         jaccard_score_val = jaccard_score(labels_val, pred_val, average='macro')
 
@@ -140,7 +138,8 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
             print("End of evaluation on", dataset_name)
         return {
             'accuracy': acc,
-            'jaccard_score': jaccard_score_val
+            'jaccard_score': jaccard_score_val,
+            'time_LP': t_end - t_start
         }
 def eval_model_FT(datasets_config, model, device, verbose=False):
     """
@@ -155,13 +154,16 @@ def eval_model_FT(datasets_config, model, device, verbose=False):
         dataloader_train = dataset['train_dataloader']
         dataloader_val = dataset['val_dataloader']
         result = train_LP(dataloader_train,
-                                 dataloader_val,
-                                 dataset_name=dataset['name'],
-                                 scale=dataset['scale'],
-                                 model=model,
-                                 type=dataset['task_type'],
-                                 device=device,
-                                 verbose=verbose)
+                          dataloader_val,
+                          dataset_name=dataset['name'],
+                          scale=dataset['scale'],
+                          model=model,
+                          type=dataset['task_type'],
+                          device=device,
+                          max_iter_train=dataset['max_iter_train'],
+                          max_iter_test=dataset['max_iter_test'],
+                          semseg_drop_rate=dataset['semseg_drop_rate'],
+                          verbose=verbose)
         metrics.update({f"{dataset['name']}_{k}": v for k, v in result.items()})
         if verbose:
             print(f"Results for {dataset['name']}: {result}")
@@ -195,7 +197,12 @@ EVAL_DATASETS = {
         "modalities": ["s2", "s1"],
         "scale": 8,
         "task_type": "classif",
-        'overrides': {}
+        "num_workers": 0,
+        "batch_size": 16,
+        "max_iter_train": 50,
+        "max_iter_test": 50,
+        "semseg_drop_rate": 0.99,
+        'overrides': {'train_dataset.max_samples': 1000,}
     },
     # "BurnScars": {
     #     "train_augmentation": Identity(),
@@ -211,6 +218,11 @@ EVAL_DATASETS = {
         "modalities": ["spot", "s2", "s1"],
         "scale": 4,
         "task_type": "semseg",
+        "num_workers": 2,
+        "batch_size": 4,
+        "max_iter_train": 50,
+        "max_iter_test": 50,
+        "semseg_drop_rate": 0.99,
         'overrides': {'classif':False}
     }
 }
@@ -223,6 +235,13 @@ def get_dataset_config(data_dir, verbose=False):
         dataconfig['modalities'] = dataset_config['modalities']
         dataconfig['scale'] = dataset_config['scale']
         dataconfig['data_dir'] = data_dir+"/${dataset.name}/"
+
+        # Add training parameters to dataconfig
+        dataconfig['num_workers'] = dataset_config['num_workers']
+        dataconfig['batch_size'] = dataset_config['batch_size']
+        dataconfig['max_iter_train'] = dataset_config['max_iter_train']
+        dataconfig['max_iter_test'] = dataset_config['max_iter_test']
+        dataconfig['semseg_drop_rate'] = dataset_config['semseg_drop_rate']
 
         for k, v in dataset_config['overrides'].items():
             ks = k.split('.')
@@ -247,10 +266,10 @@ def get_dataset_config(data_dir, verbose=False):
         datamodule = DataModule(train_dataset=hydra.utils.instantiate(dataconfig['train_dataset']),
                                 val_dataset=hydra.utils.instantiate(dataconfig['val_dataset']),
                                 test_dataset=hydra.utils.instantiate(dataconfig['test_dataset']),
-                                global_batch_size=BATCH_SIZE,
+                                global_batch_size=dataconfig['batch_size'],
                                 num_nodes=1,
                                 num_devices=1,
-                                num_workers=NUM_WORKERS,
+                                num_workers=dataconfig['num_workers'],
                                 verbose=verbose)
         datamodule.setup()
         dataconfig['train_dataloader'] = datamodule.train_dataloader()
@@ -260,8 +279,8 @@ def get_dataset_config(data_dir, verbose=False):
     return list_dataconfig
 
 if __name__ == "__main__":
-    model_config = "logs/JZ/train/runs/20250410-11:22-Geom-ASt-loss/0_/.hydra/config.yaml"
-    model_path = "logs/JZ/train/runs/20250410-11:22-Geom-ASt-loss/0_/checkpoints/epoch_002.ckpt"
+    model_config = "logs/JZ/train/runs/20250411-16:31-GEOm-ASt-Original/0_/.hydra/config.yaml"
+    model_path = "logs/JZ/train/runs/20250411-16:31-GEOm-ASt-Original/0_/checkpoints/last.ckpt"
     device = "cuda" if torch.cuda.is_available() else "cpu"
     data_dir = '/home/yperron/code/AnySat/data/'
     metrics = eval_model_from_path(model_path, model_config, device, overwrite_data_dir=data_dir, verbose=True)

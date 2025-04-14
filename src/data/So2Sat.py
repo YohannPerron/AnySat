@@ -35,6 +35,7 @@ class So2Sat(Dataset):
         transform,
         split: str = "train",
         norm_path = None,
+        max_samples = None,
     ):
         """Initialize the So2Sat dataset.
 
@@ -54,16 +55,20 @@ class So2Sat(Dataset):
 
         # Load HDF5 file
         h5_file = h5py.File(path + "/" + mapping[split] + ".h5", 'r')
-        self.labels = torch.from_numpy(np.array(h5_file["label"])).argmax(dim=1)
+        length = len(h5_file["label"])
+        if max_samples is not None:
+            print("Using {} samples".format(max_samples))
+            length = min(length, max_samples)
+        self.labels = torch.from_numpy(np.array(h5_file["label"][0:length])).argmax(dim=1)
         if "s1" in self.modalities:
-            self.s1 = torch.from_numpy(np.array(h5_file["sen1"])).permute(0, 3, 2, 1)[:, [2, 0], :, :] #[:, [5, 4], :, :]
+            self.s1 = torch.from_numpy(np.array(h5_file["sen1"][0:length])).permute(0, 3, 2, 1)[:, [2, 0], :, :] #[:, [5, 4], :, :]
             ratio_band = self.s1[:, :1, :, :] / (self.s1[:, 1:, :, :] + 1e-4)
             ratio_band = torch.clamp(ratio_band, max=1e4, min=-1e4)
             self.s1 = torch.cat((self.s1[:, :2, :, :], ratio_band), dim=1).float()
         if "s2" in self.modalities:
-            self.s2 = torch.from_numpy(np.array(h5_file["sen2"])).permute(0, 3, 2, 1)
+            self.s2 = torch.from_numpy(np.array(h5_file["sen2"][0:length])).permute(0, 3, 2, 1)
         h5_file.close()
-        
+
         self.collate_fn = collate_fn
         self.norm = None
         if norm_path is not None:
@@ -77,11 +82,11 @@ class So2Sat(Dataset):
                     torch.tensor(normvals['mean']).float(),
                     torch.tensor(normvals['std']).float(),
                 )
-            self.norm = norm  
+            self.norm = norm
 
     def __len__(self):
         return len(self.labels)
-    
+
     def compute_norm_vals(self, folder, sat):
         print("Computing norm values for {}".format(sat))
         means = []
@@ -112,7 +117,7 @@ class So2Sat(Dataset):
         if self.norm is not None:
             for modality in self.modalities:
                 if len(output[modality].shape) == 4:
-                    output[modality] = (output[modality] - self.norm[modality][0][None, :, 
+                    output[modality] = (output[modality] - self.norm[modality][0][None, :,
                                                     None, None]) / self.norm[modality][1][None, :, None, None]
                 else:
                     output[modality] = (output[modality] - self.norm[modality][0][:, None, None]) / self.norm[modality][1][:, None, None]
