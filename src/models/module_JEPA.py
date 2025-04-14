@@ -268,6 +268,7 @@ class ModuleMulti(LightningModule):
 
     def on_validation_epoch_end(self):
         metrics = self.val_metrics.compute()
+        self.val_metrics.reset()
 
         if self.current_epoch % self.eval_every == 0:
             log.info("Evaluating FT metrics")
@@ -305,6 +306,7 @@ class ModuleMulti(LightningModule):
 
     def on_test_epoch_end(self):
         metrics = self.test_metrics.compute()
+        self.val_metrics.reset()
         for metric_name, metric_value in metrics.items():
             self.log(
                 f"test/{metric_name}",
