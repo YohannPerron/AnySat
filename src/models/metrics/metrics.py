@@ -728,10 +728,10 @@ class OutDiversity(Metric):
         self.add_state("count", torch.tensor(0, dtype=torch.int64), dist_reduce_fx="sum")
     def update(self, pred, batch):
         #pred['predicted_tokens'] BLC
-        print(pred['predicted_tokens'].shape)
-        print(torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum())
-        self.variance += torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum().cpu()
-        self.count += pred['predicted_tokens'].shape[0]
+        variance = torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum().cpu()
+        if not torch.isnan(variance):
+            self.variance += variance
+            self.count += pred['predicted_tokens'].shape[0]
 
 
     def compute(self):
