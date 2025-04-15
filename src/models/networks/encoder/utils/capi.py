@@ -16,6 +16,8 @@ class LayerNormHead(nn.Module):
         """
         return F.layer_norm(x, (x.size(-1),)), 0.0
 
+
+
 exp_max_values = {
     torch.float16: 0,
     torch.float32: 50,
@@ -67,6 +69,7 @@ class OnlineClusteringHead(nn.Module):
         target_temp: float,
         pred_temp: float,
         positionwise_sk: bool = True,
+        target: str = "sinkhorn",
     ):
         super().__init__()
         self.out_dim = out_dim
@@ -74,6 +77,7 @@ class OnlineClusteringHead(nn.Module):
         self.target_temp = target_temp
         self.pred_temp = pred_temp
         self.positionwise_sk = positionwise_sk
+        self.target = target
         self.layer = nn.Linear(in_dim, out_dim, bias=bias)
         torch.nn.init.normal_(self.layer.weight, std=1)
         if bias:
@@ -90,4 +94,7 @@ class OnlineClusteringHead(nn.Module):
         tgt = assignments.flatten(0, -2).float()
         pred = logits.flatten(0, -2).float()
         loss = -torch.sum(tgt * F.log_softmax(pred / self.pred_temp, dim=-1), dim=-1).mean()
-        return assignments.detach().view(b,h,w,c), loss
+        if self.target == "sinkhorn":
+            return assignments.detach().view(b,h,w,c), loss
+        elif self.target == "softmax":
+            return F.softmax(logits.detach() / self.target_temp, dim=-1).view(b,h,w,c), loss

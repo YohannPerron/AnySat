@@ -10,6 +10,7 @@ model.network.target_head:
   n_sk_iter: 3
   target_temp: 0.06
   pred_temp: 0.12
+  target: ${model.loss.target} 
 
 model:
   loss:
