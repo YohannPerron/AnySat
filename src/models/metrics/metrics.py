@@ -724,11 +724,12 @@ class SegPangaea(Metric):
 class OutDiversity(Metric):
     def __init__(self):
         super().__init__()
-        self.add_state("variance", torch.tensor(0.0, dtype=torch.float64))
-        self.add_state("count", torch.tensor(0, dtype=torch.int64))
-
+        self.add_state("variance", torch.tensor(0.0, dtype=torch.float64),dist_reduce_fx="sum")
+        self.add_state("count", torch.tensor(0, dtype=torch.int64), dist_reduce_fx="sum")
     def update(self, pred, batch):
         #pred['predicted_tokens'] BLC
+        print(pred['predicted_tokens'].shape)
+        print(torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum())
         self.variance += torch.var(pred['predicted_tokens'], dim=1).mean(dim=-1).sum().cpu()
         self.count += pred['predicted_tokens'].shape[0]
 
