@@ -17,6 +17,8 @@ from models.networks.encoder.utils.pos_embed import (
     get_2d_sincos_pos_embed_with_scale)
 
 SOLVER = 'lbfgs'
+MAX_ITER = 1000
+TOL=3e-3
 
 @torch.no_grad()
 def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model, device, max_iter_train, max_iter_test, semseg_drop_rate, verbose=False):
@@ -37,6 +39,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
     if verbose:
         print("Start evaluating on", dataset_name)
     # Enable torch mixed precision (FP16)
+    t_sample_start = time.time()
     with torch.amp.autocast("cuda",enabled=True, dtype=torch.float16):
         if verbose:
             print("Sampling train set")
@@ -81,6 +84,7 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
                 break
         if verbose:
             print()
+    t_sample_end = time.time()
     if verbose:
         print("End sampling, Training Linear regression")
     features_train = torch.cat(features_train, dim=0).numpy()
@@ -88,31 +92,11 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
     features_val = torch.cat(features_val, dim=0).numpy()
     labels_val = torch.cat(labels_val, dim=0).numpy()
 
-    #normalize features
-    mean = np.mean(features_train, axis=0)
-    std = np.std(features_train, axis=0)
-    features_train = (features_train - mean) / std
-    features_val = (features_val - mean) / std
-
 
     if type == 'classif':
         while len(labels_train.shape)>1:
             labels_train = np.argmax(labels_train, axis=1)
             labels_val = np.argmax(labels_val, axis=1)
-
-        t_start = time.time()
-        clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
-        clf.fit(features_train, labels_train)
-        t_end = time.time()
-
-        pred_val = clf.predict(features_val)
-        acc = accuracy_score(labels_val, pred_val)
-        f1 = f1_score(labels_val, pred_val, average='macro')
-
-        if verbose:
-            print("End of evaluation on", dataset_name)
-        return {'accuracy': acc, 'f1_score': f1, 'time_LP': t_end - t_start }
-
     elif type == 'semseg':
         # Flatten the features and labels
         features_train = features_train.reshape(-1, features_train.shape[-1])
@@ -125,21 +109,42 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
         labels_train = labels_train[keep_mask]
         features_train = features_train[keep_mask]
 
-        t_start = time.time()
-        clf = LogisticRegression(max_iter=1000, tol=3e-3, n_jobs=-1, solver=SOLVER)
-        clf.fit(features_train, labels_train)
-        t_end = time.time()
+    #normalize features
+    mean = np.mean(features_train, axis=0)
+    std = np.std(features_train, axis=0)
+    features_train = (features_train - mean) / std
+    features_val = (features_val - mean) / std
 
+
+    t_LP_start = time.time()
+    clf = LogisticRegression(max_iter=MAX_ITER, tol=TOL, n_jobs=None, solver=SOLVER)
+    clf.fit(features_train, labels_train)
+    t_LP_end = time.time()
+
+    if type == 'classif':
+        pred_val = clf.predict(features_val)
+        acc = accuracy_score(labels_val, pred_val)
+        f1 = f1_score(labels_val, pred_val, average='macro')
+
+        if verbose:
+            print("End of evaluation on", dataset_name)
+        return {'accuracy': acc, 'f1_score': f1, 'time_LP': t_LP_end - t_LP_start, 'time_sample': t_sample_end - t_sample_start}
+
+    elif type == 'semseg':
+        t_predict_start = time.time()
         pred_val = clf.predict(features_val)
         acc = accuracy_score(labels_val, pred_val)
         jaccard_score_val = jaccard_score(labels_val, pred_val, average='macro')
+        t_predict_end = time.time()
+        print("time predict", t_predict_end - t_predict_start)
 
         if verbose:
             print("End of evaluation on", dataset_name)
         return {
             'accuracy': acc,
             'jaccard_score': jaccard_score_val,
-            'time_LP': t_end - t_start
+            'time_LP': t_LP_end - t_LP_start,
+            'time_sample': t_sample_end - t_sample_start,
         }
 def eval_model_FT(datasets_config, model, device, verbose=False):
     """
@@ -149,7 +154,7 @@ def eval_model_FT(datasets_config, model, device, verbose=False):
     metrics= {}
     for dataset in datasets_config:
         if verbose:
-            print(f"Evaluating on dataset: {dataset['name']}")
+            print(f"Evaluating on dataset: {dataset['out_name']}")
 
         dataloader_train = dataset['train_dataloader']
         dataloader_val = dataset['val_dataloader']
@@ -164,9 +169,9 @@ def eval_model_FT(datasets_config, model, device, verbose=False):
                           max_iter_test=dataset['max_iter_test'],
                           semseg_drop_rate=dataset['semseg_drop_rate'],
                           verbose=verbose)
-        metrics.update({f"{dataset['name']}_{k}": v for k, v in result.items()})
+        metrics.update({f"{dataset['out_name']}_{k}": v for k, v in result.items()})
         if verbose:
-            print(f"Results for {dataset['name']}: {result}")
+            print(f"Results for {dataset['out_name']}: {result}")
     return metrics
 
 def eval_model_from_path(model_path, model_config, device = 'cuda', overwrite_data_dir=None, verbose=False):
@@ -192,6 +197,7 @@ def eval_model_from_path(model_path, model_config, device = 'cuda', overwrite_da
 # Replace multiple lists with a nested dictionary for better organization
 EVAL_DATASETS = {
     "So2Sat": {
+        "config": "So2Sat",
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),
         "modalities": ["s2", "s1"],
@@ -213,9 +219,24 @@ EVAL_DATASETS = {
     #     'overrides': {}
     # },
     "Pastis": {
+        "config": "Pastis",
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),
         "modalities": ["spot", "s2", "s1"],
+        "scale": 4,
+        "task_type": "semseg",
+        "num_workers": 2,
+        "batch_size": 4,
+        "max_iter_train": 50,
+        "max_iter_test": 50,
+        "semseg_drop_rate": 0.99,
+        'overrides': {'classif':False}
+    },
+    "PastisS1": {
+        "config": "Pastis",
+        "train_augmentation": Identity(),
+        "test_augmentation": Identity(),
+        "modalities": ["s1"],
         "scale": 4,
         "task_type": "semseg",
         "num_workers": 2,
@@ -230,11 +251,12 @@ EVAL_DATASETS = {
 def get_dataset_config(data_dir, verbose=False):
     list_dataconfig = []
     for dataset_name, dataset_config in EVAL_DATASETS.items():
-        dataset_config_path = f"configs/dataset/{dataset_name}.yaml"
+        dataset_config_path = f"configs/dataset/{dataset_config['config']}.yaml"
         dataconfig = OmegaConf.load(dataset_config_path)
         dataconfig['modalities'] = dataset_config['modalities']
         dataconfig['scale'] = dataset_config['scale']
         dataconfig['data_dir'] = data_dir+"/${dataset.name}/"
+        dataconfig['out_name'] = dataset_name
 
         # Add training parameters to dataconfig
         dataconfig['num_workers'] = dataset_config['num_workers']
