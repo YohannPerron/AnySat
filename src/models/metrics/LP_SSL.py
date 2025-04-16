@@ -158,17 +158,21 @@ def eval_model_FT(datasets_config, model, device, verbose=False):
 
         dataloader_train = dataset['train_dataloader']
         dataloader_val = dataset['val_dataloader']
-        result = train_LP(dataloader_train,
-                          dataloader_val,
-                          dataset_name=dataset['name'],
-                          scale=dataset['scale'],
-                          model=model,
-                          type=dataset['task_type'],
-                          device=device,
-                          max_iter_train=dataset['max_iter_train'],
-                          max_iter_test=dataset['max_iter_test'],
-                          semseg_drop_rate=dataset['semseg_drop_rate'],
-                          verbose=verbose)
+        try:
+            result = train_LP(dataloader_train,
+                            dataloader_val,
+                            dataset_name=dataset['name'],
+                            scale=dataset['scale'],
+                            model=model,
+                            type=dataset['task_type'],
+                            device=device,
+                            max_iter_train=dataset['max_iter_train'],
+                            max_iter_test=dataset['max_iter_test'],
+                            semseg_drop_rate=dataset['semseg_drop_rate'],
+                            verbose=verbose)
+        except Exception as e:
+            result = {}
+            print(f"Error during evaluation on {dataset['out_name']}: {e}")
         metrics.update({f"{dataset['out_name']}_{k}": v for k, v in result.items()})
         if verbose:
             print(f"Results for {dataset['out_name']}: {result}")
@@ -196,7 +200,7 @@ def eval_model_from_path(model_path, model_config, device = 'cuda', overwrite_da
 
 # Replace multiple lists with a nested dictionary for better organization
 EVAL_DATASETS = {
-    "So2Sat": {
+    "so2sat": {
         "config": "So2Sat",
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),
@@ -218,7 +222,7 @@ EVAL_DATASETS = {
     #     "task_type": "semseg",
     #     'overrides': {}
     # },
-    "Pastis": {
+    "PASTIS-R": {
         "config": "Pastis",
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),
@@ -232,7 +236,7 @@ EVAL_DATASETS = {
         "semseg_drop_rate": 0.99,
         'overrides': {'classif':False}
     },
-    "PastisS1": {
+    "PASTIS-R-S1": {
         "config": "Pastis",
         "train_augmentation": Identity(),
         "test_augmentation": Identity(),
