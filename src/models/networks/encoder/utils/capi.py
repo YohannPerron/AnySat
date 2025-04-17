@@ -84,8 +84,7 @@ class OnlineClusteringHead(nn.Module):
             torch.nn.init.zeros_(self.layer.bias)
 
     def forward(self, x):
-        b,h,w,c = x.shape
-        x = x.view(b, -1, c)
+        b,l,c = x.shape
         x_n = nn.functional.normalize(x, dim=-1, p=2, eps=1e-7)
         logits = self.layer(x_n)
         if not self.positionwise_sk:
@@ -95,6 +94,6 @@ class OnlineClusteringHead(nn.Module):
         pred = logits.flatten(0, -2).float()
         loss = -torch.sum(tgt * F.log_softmax(pred / self.pred_temp, dim=-1), dim=-1).mean()
         if self.target == "sinkhorn":
-            return assignments.detach().view(b,h,w,c), loss
+            return assignments.detach().view(b,l,self.out_dim), loss
         elif self.target == "softmax":
-            return F.softmax(logits.detach() / self.target_temp, dim=-1).view(b,h,w,c), loss
+            return F.softmax(logits.detach() / self.target_temp, dim=-1).view(b,l,self.out_dim), loss

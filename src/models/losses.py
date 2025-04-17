@@ -155,7 +155,7 @@ class MILNCEPatch(nn.Module):
 
     """
 
-    def __init__(self, tau=0.1):
+    def __init__(self, tau=0.2):
         super(MILNCEPatch, self).__init__()
         self.tau = tau
 

@@ -131,12 +131,9 @@ def train_LP(dataloader_train, dataloader_val, dataset_name, scale, type, model,
         return {'accuracy': acc, 'f1_score': f1, 'time_LP': t_LP_end - t_LP_start, 'time_sample': t_sample_end - t_sample_start}
 
     elif type == 'semseg':
-        t_predict_start = time.time()
         pred_val = clf.predict(features_val)
         acc = accuracy_score(labels_val, pred_val)
         jaccard_score_val = jaccard_score(labels_val, pred_val, average='macro')
-        t_predict_end = time.time()
-        print("time predict", t_predict_end - t_predict_start)
 
         if verbose:
             print("End of evaluation on", dataset_name)

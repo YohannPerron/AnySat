@@ -735,7 +735,6 @@ class OutDiversity(Metric):
 
 
     def compute(self):
-        print(self.variance, self.count)
         variance = self.variance / self.count
         return {'variance': variance.item()}
 
